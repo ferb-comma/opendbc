@@ -141,8 +141,15 @@ class CarState(CarStateBase):
 
   @staticmethod
   def get_can_parsers(CP):
+    # the EPS goes quiet for up to 280 ms while the engine cranks, like on an auto start-stop restart
+    pt_messages = []
+    if not (CP.flags & SubaruFlags.PREGLOBAL):
+      pt_messages.append(("Steering_Torque", 25))
+    if CP.flags & SubaruFlags.LKAS_ANGLE:
+      pt_messages.append(("Steering_2", 25))
+
     return {
-      Bus.pt: CANParser(DBC[CP.carFingerprint][Bus.pt], [], CanBus.main),
+      Bus.pt: CANParser(DBC[CP.carFingerprint][Bus.pt], pt_messages, CanBus.main),
       Bus.cam: CANParser(DBC[CP.carFingerprint][Bus.pt], [], CanBus.camera),
       Bus.alt: CANParser(DBC[CP.carFingerprint][Bus.pt], [], CanBus.alt)
     }
