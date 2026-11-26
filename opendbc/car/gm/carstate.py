@@ -30,6 +30,7 @@ class CarState(CarStateBase):
     self.buttons_counter = 0
 
     self.distance_button = 0
+    self.cruise_cancelling = False
 
   def update_button_enable(self, buttonEvents: list[structs.CarState.ButtonEvent]):
     if not self.CP.pcmCruise:
@@ -122,7 +123,13 @@ class CarState(CarStateBase):
     ret.parkingBrake = pt_cp.vl["BCMGeneralPlatformStatus"]["ParkBrakeSwActive"] == 1
     ret.cruiseState.available = pt_cp.vl["ECMEngineStatus"]["CruiseMainOn"] != 0
     ret.espDisabled = pt_cp.vl["ESPStatus"]["TractionControlOn"] != 1
-    ret.accFaulted = (pt_cp.vl["AcceleratorPedal2"]["CruiseState"] == AccState.FAULTED or
+    # After a cancel while the camera is braking, the ECM reports FAULTED until the camera releases the brakes
+    cruise_state = pt_cp.vl["AcceleratorPedal2"]["CruiseState"]
+    if cruise_state == AccState.OFF:
+      self.cruise_cancelling = False
+    elif cruise_state != AccState.FAULTED and (self.cruise_buttons == CruiseButtons.CANCEL or ret.brakePressed):
+      self.cruise_cancelling = self.CP.pcmCruise
+    ret.accFaulted = ((cruise_state == AccState.FAULTED and not self.cruise_cancelling) or
                       pt_cp.vl["EBCMFrictionBrakeStatus"]["FrictionBrakeUnavailable"] == 1)
 
     ret.cruiseState.enabled = pt_cp.vl["AcceleratorPedal2"]["CruiseState"] != AccState.OFF
