@@ -183,6 +183,17 @@ static bool rx_msg_safety_check(const CANPacket_t *msg,
   if (!valid) {
     exit_controls();
   }
+
+  // the tick's verdict clears once every check is seen and valid
+  bool all_valid = true;
+  for (int i = 0; i < cfg->rx_checks_len; i++) {
+    if (!safety.rx_status[i].msg_seen || !is_msg_valid(i)) {
+      all_valid = false;
+    }
+  }
+  if (all_valid) {
+    safety.safety_rx_checks_invalid = false;
+  }
   return valid;
 }
 
