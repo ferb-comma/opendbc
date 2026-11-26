@@ -510,8 +510,19 @@ static int ROUND(float val) {
 // the only writers of controls_allowed (see test_globals.py)
 // every engagement resets the heartbeat mismatches, even if controls are already allowed from one openpilot refused
 static void enter_controls(void) {
-  safety.controls_allowed = true;
-  safety.heartbeat_engaged_mismatches = 0U;
+  // every RX check must have been seen, valid and on time
+  bool rx_checks_valid = true;
+  for (int i = 0; i < safety_setup.current_safety_config.rx_checks_len; i++) {
+    const RxStatus *status = &safety.rx_status[i];
+    if (!status->msg_seen || status->lagging || !is_msg_valid(i)) {
+      rx_checks_valid = false;
+    }
+  }
+
+  if (rx_checks_valid) {
+    safety.controls_allowed = true;
+    safety.heartbeat_engaged_mismatches = 0U;
+  }
 }
 
 static void exit_controls(void) {
