@@ -287,7 +287,8 @@ static void tick_copy(void) {
     }
   }
 
-  safety.safety_rx_checks_invalid = rx_checks_invalid;
+  // like the relay malfunction check, reported once the mode has had a full tick to see every check
+  safety.safety_rx_checks_invalid = rx_checks_invalid && (safety.safety_mode_cnt > 1U);
 }
 
 static void heartbeat_check_copy(void) {
