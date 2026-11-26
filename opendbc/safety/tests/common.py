@@ -1568,3 +1568,131 @@ class CarSafetyTest(SafetyTest):
           self.safety.set_controls_allowed(True)
           self.safety.safety_tick()
           self.assertEqual(allowed, self.safety.get_controls_allowed())
+
+  # ***** rx checks right after the safety mode is set, as when pandad switches from ELM327 at startup *****
+
+  MODE_SET_US = 10_000_000
+
+  def _rx_check_frames(self, skip: int = -1):
+    """The next valid frame of each RX check but skip, the first of its alternatives in the DBC"""
+    frames = {}
+    for i, _, build in self._rx_check_builders():
+      if i != skip and i not in frames:
+        frames[i] = build()
+    return list(frames.values())
+
+  def _run_startup(self, until_us: int, tick_phase_us: int, skip: int = -1, bad_frame=None, stop_us: int | None = None):
+    """Set the mode at MODE_SET_US, then send every RX check at 10 Hz (skip never; bad_frame() instead of skip's frame;
+    all stop at stop_us) and tick at 1 Hz from tick_phase_us after the mode set. Returns the times of the ticks that reported invalid"""
+    self.safety.set_timer(self.MODE_SET_US)
+    self._reset_safety_hooks()
+    invalid_ticks = []
+    for t in range(0, until_us, 1000):
+      self.safety.set_timer(self.MODE_SET_US + t)
+      if t % 100_000 == 10_000 and (stop_us is None or t < stop_us):
+        for frame in self._rx_check_frames(skip):
+          self._rx(frame)
+        if bad_frame is not None:
+          self._rx(bad_frame())
+      if t % 1_000_000 == tick_phase_us:
+        self.safety.safety_tick()
+        if self.safety.safety_a.state.safety_rx_checks_invalid:
+          invalid_ticks.append(t)
+    return invalid_ticks
+
+  def setUp(self):
+    super().setUp()
+    if self._testMethodName.startswith(("test_startup_", "test_midrive_")):
+      self._reset_safety_hooks()
+      for frame in self._rx_check_frames():
+        self._rx(frame)
+      if not all(self.safety.safety_a.state.rx_status[i].msg_seen for i in range(self.safety.get_rx_checks_len())):
+        raise unittest.SkipTest("the test frames don't match every RX check")
+
+  def test_startup_tick_before_all_seen(self):
+    # the first tick lands right after the mode set, before a 10 Hz check is due: nothing is wrong, nothing is reported
+    for skip in range(self.safety.get_rx_checks_len()):
+      with self.subTest(skip=skip):
+        self.safety.set_timer(self.MODE_SET_US)
+        self._reset_safety_hooks()
+        self.safety.set_timer(self.MODE_SET_US + 10_000)
+        for frame in self._rx_check_frames(skip):
+          self._rx(frame)
+        self.safety.set_timer(self.MODE_SET_US + 50_000)
+        self.safety.safety_tick()
+        self.assertFalse(self.safety.safety_a.state.safety_rx_checks_invalid)
+      for phase in (1_000, 50_000, 500_000, 999_000):
+        with self.subTest(phase=phase):
+          self.assertEqual([], self._run_startup(4_000_000, phase))
+
+  def test_startup_msg_never_arrives(self):
+    # a check that never arrives is reported within 2 s of the mode set, like a check that stops mid-drive
+    for skip in range(self.safety.get_rx_checks_len()):
+      for phase in (1_000, 50_000, 500_000, 999_000):
+        with self.subTest(skip=skip, phase=phase):
+          invalid_ticks = self._run_startup(3_100_000, phase, skip=skip)
+          self.assertTrue(invalid_ticks)
+          self.assertLessEqual(invalid_ticks[0], 2_000_000)
+          self.assertFalse(self.safety.get_controls_allowed())
+
+  def test_startup_msg_bad_checksum(self):
+    for i, m, build in self._rx_check_builders():
+      if m.ignore_checksum:
+        continue
+      sigs = [sig for sig in self.packer.dbc.addr_to_msg[m.addr].sigs.values() if sig.calc_checksum]
+
+      def bad_frame(build=build, sigs=sigs, m=m):
+        dat = bytearray(bytes(build()[0].data)[:m.len])
+        set_value(dat, sigs[0], (sigs[0].get_raw_value(dat) + 1) % (1 << sigs[0].size))
+        return libsafety_py.make_CANPacket(m.addr, m.bus, bytes(dat))
+
+      for phase in (1_000, 500_000, 999_000):
+        with self.subTest(addr=hex(m.addr), phase=phase):
+          invalid_ticks = self._run_startup(3_100_000, phase, skip=i, bad_frame=bad_frame)
+          self.assertTrue(invalid_ticks)
+          self.assertLessEqual(invalid_ticks[0], 2_000_000)
+
+  def test_startup_msg_bad_counter(self):
+    for i, m, build in self._rx_check_builders():
+      if m.ignore_counter:
+        continue
+      frame = build()  # the same counter every frame
+      for phase in (1_000, 500_000, 999_000):
+        with self.subTest(addr=hex(m.addr), phase=phase):
+          invalid_ticks = self._run_startup(3_100_000, phase, skip=i, bad_frame=lambda frame=frame: frame)
+          self.assertTrue(invalid_ticks)
+          self.assertLessEqual(invalid_ticks[0], 2_000_000)
+
+  def test_startup_engage_before_all_seen(self):
+    # cruise can't engage while any check is still unseen
+    try:
+      pcm_msg = self._pcm_status_msg(True)
+    except Exception:  # button engagement modes don't build it
+      pcm_msg = None
+    if pcm_msg is None:
+      raise unittest.SkipTest("engages from buttons")
+    pcm_addr = pcm_msg[0].addr
+    for skip in range(self.safety.get_rx_checks_len()):
+      cfg = self.safety.safety_a.setup.current_safety_config
+      if pcm_addr in [cfg.rx_checks[skip].msg[j].addr for j in range(3)]:
+        continue
+      with self.subTest(skip=skip):
+        self.safety.set_timer(self.MODE_SET_US)
+        self._reset_safety_hooks()
+        for frame in self._rx_check_frames(skip):
+          self._rx(frame)
+        self._rx(self._pcm_status_msg(False))
+        self._rx(self._pcm_status_msg(True))
+        self.assertFalse(self.safety.get_controls_allowed())
+
+  def test_midrive_msg_stops(self):
+    # a check that stops is reported at the first tick more than 1 s after its last frame
+    for skip in range(self.safety.get_rx_checks_len()):
+      for phase in (1_000, 500_000, 999_000):
+        with self.subTest(skip=skip, phase=phase):
+          stop_us = 5_000_000
+          invalid_ticks = [t for t in self._run_startup(8_100_000, phase, stop_us=stop_us) if t > 3_000_000]
+          last_frame = stop_us - 100_000 + 10_000
+          first_lagging = next(t for t in range(phase, 9_000_000, 1_000_000) if t - last_frame > 1_000_000)
+          self.assertEqual(first_lagging, invalid_ticks[0])
+          self.assertTrue(all(t >= first_lagging for t in invalid_ticks))
