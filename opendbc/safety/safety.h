@@ -281,7 +281,8 @@ static void tick_copy(void) {
     // lagging after 1s, at least 10 missed messages since RX checks are >= 10Hz (see TestSafetyConfigs)
     // 2s of lag is worst case, since the function is called at 1Hz
     status->lagging = elapsed_time > 1000000U;
-    if (status->lagging || !is_msg_valid(i)) {
+    // a check not seen yet lags 1s after the mode set, enter_controls waits for it
+    if (status->lagging || (status->msg_seen && !is_msg_valid(i))) {
       rx_checks_invalid = true;
       exit_controls();
     }
@@ -394,6 +395,9 @@ static int set_hooks_copy(uint16_t mode, uint16_t param) {
   safety_setup.current_safety_config.tx_msgs = cfg.tx_msgs;
   safety_setup.current_safety_config.tx_msgs_len = cfg.tx_msgs_len;
   safety_setup.current_safety_config.disable_forwarding = cfg.disable_forwarding;
+  for (int i = 0; i < cfg.rx_checks_len; i++) {
+    safety.rx_status[i].last_timestamp = safety_ts;
+  }
   return set_status;
 }
 
@@ -455,6 +459,7 @@ void safety_heartbeat_check(void) {
 }
 
 int set_safety_hooks(uint16_t mode, uint16_t param) {
+  safety_ts = microsecond_timer_get();
   current_copy = &safety_b;
   (void)set_hooks_copy(mode, param);
   current_copy = &safety_a;
