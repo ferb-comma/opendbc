@@ -52,6 +52,7 @@ class CarController(CarControllerBase):
     self.params = CarControllerParams(self.CP)
     self.last_torque = 0
     self.last_angle = 0
+    self.last_lat_active = False
     self.alert_active = False
     self.standstill_req = False
     self.permit_braking = True
@@ -121,10 +122,12 @@ class CarController(CarControllerBase):
         # EPS uses the torque sensor angle to control with, offset to compensate
         apply_angle = actuators.steeringAngleDeg + CS.out.steeringAngleOffsetDeg
 
-        # Angular rate limit based on speed
+        # Angular rate limit based on speed. The panda limits the first active frame from the measured angle,
+        # not our last inactive command, so hold the current angle for that frame instead of stepping from a stale one
         self.last_angle = apply_std_steer_angle_limits(apply_angle, self.last_angle, CS.out.vEgoRaw,
                                                        CS.out.steeringAngleDeg + CS.out.steeringAngleOffsetDeg,
-                                                       CC.latActive, self.params.ANGLE_LIMITS)
+                                                       CC.latActive and self.last_lat_active, self.params.ANGLE_LIMITS)
+        self.last_lat_active = CC.latActive
 
     self.last_torque = apply_torque
 
