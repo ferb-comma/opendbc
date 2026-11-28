@@ -52,6 +52,8 @@ class CarController(CarControllerBase):
     self.params = CarControllerParams(self.CP)
     self.last_torque = 0
     self.last_angle = 0
+    self.lta_active = False
+    self.lta_lat_active_last = False
     self.alert_active = False
     self.standstill_req = False
     self.permit_braking = True
@@ -121,10 +123,14 @@ class CarController(CarControllerBase):
         # EPS uses the torque sensor angle to control with, offset to compensate
         apply_angle = actuators.steeringAngleDeg + CS.out.steeringAngleOffsetDeg
 
+        # the panda only rate limits from a frame it got while controls were allowed, so the first one after engaging is still inactive
+        self.lta_active = lat_active and self.lta_lat_active_last
+        self.lta_lat_active_last = lat_active
+
         # Angular rate limit based on speed
         self.last_angle = apply_std_steer_angle_limits(apply_angle, self.last_angle, CS.out.vEgoRaw,
                                                        CS.out.steeringAngleDeg + CS.out.steeringAngleOffsetDeg,
-                                                       CC.latActive, self.params.ANGLE_LIMITS)
+                                                       self.lta_active, self.params.ANGLE_LIMITS)
 
     self.last_torque = apply_torque
 
@@ -144,7 +150,7 @@ class CarController(CarControllerBase):
 
     # STEERING_LTA does not seem to allow more rate by sending faster, and may wind up easier
     if self.frame % 2 == 0 and self.CP.flags & ToyotaFlags.TSS2:
-      lta_active = lat_active and self.CP.steerControlType == SteerControlType.angle
+      lta_active = self.lta_active
       # cut steering torque with TORQUE_WIND_DOWN when either EPS torque or driver torque is above
       # the threshold, to limit max lateral acceleration and for driver torque blending respectively.
       full_torque_condition = (abs(CS.out.steeringTorqueEps) < self.params.STEER_MAX and
